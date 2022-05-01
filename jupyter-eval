@@ -1,0 +1,24 @@
+#!~/.pyenv/shims/python3
+# see if this works instead: #!~/.local/pipx/venvs/jupyterlab/bin/python3
+# https://stackoverflow.com/a/35792945/583763
+ # noqa: E200
+
+##%
+from __future__ import print_function
+import sys
+import jupyter_client
+
+
+##%
+cf = jupyter_client.find_connection_file()
+
+print(cf)
+##%
+km = jupyter_client.BlockingKernelClient(connection_file = cf)
+
+if sys.argv[1:]:
+    code = ' '.join(sys.argv[1:])
+else:
+    code = sys.stdin.read()
+##%
+km.execute(code)

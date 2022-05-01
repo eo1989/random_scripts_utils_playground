@@ -1,0 +1,15 @@
+#! /usr/bin/env bash
+
+# add remote upstream
+
+# Usage:
+# git-fork <original-author>
+#
+
+user=$1
+if [[ "$user" == "" ]]; then
+  echo "Usage: git-fork <original-author>"
+else
+  repo=`gbasename "$(pwd)"`
+  git remote add upstream "git@github.com:$user/$repo.git"
+fi

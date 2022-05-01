@@ -1,0 +1,19 @@
+#!/usr/bin/env python3
+# -*- coding: utf-8 -*-
+# scrape: extract html elements using an xpath query or css3 selector
+
+# ex:
+# $ curl 'https://en.wikipedia.org/wiki/List_of_sovereign_stats' -s \
+# | scrape -be 'table.wikitable > tbody > tr  > td > b > a'
+#
+# dependencies: lxml and cssselect
+
+import sys
+import argparse
+from lxml import etree
+
+
+def main():
+    parser = argparse.ArgumentParser()
+    parser.add_argument('html', nargs='?', type=argparse.FileType('rb'),
+                        default=sys.stdin, help="HTML", metavar="HTML")

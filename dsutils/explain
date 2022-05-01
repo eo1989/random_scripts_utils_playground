@@ -1,0 +1,19 @@
+#!/usr/local/bin/bash
+# explain: cmd line wrapper for explainshell
+
+# ex usage: explain tar xzvf
+
+# dependency: scrape (from: https://github.com/jeroenjanssens/data-science-toolbox)
+
+
+COMMAND="$@"
+URL="http://explainshell.com/explain?cmd=${COMMAND}"
+SYSTEM=$(uname)
+
+if [[ "SYSTEM" == "Linux" ]]
+  then
+    curl -s "${URL}" | scrape -e 'span.dropdown > a, pre' | sed -re 's/<(\/?)[^>]*>//g'
+elif [[ "$SYSTEM" == "Darwin" ]]
+  then
+    curl -s "${URL}" | scrape -e 'span.dropdown > a, pre' | sed -re 's/<(\/?)[^>]*>//g'
+fi

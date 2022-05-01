@@ -1,0 +1,9 @@
+#!/usr/bin/env zsh
+
+export NVIM_LOG=$HOME/.config/nvim/nvim_bug.log
+
+if [ -f $NVIM_LOG ]; then
+  tail -f $NVIM_LOG && nvim -v9$NVIM_LOG
+else
+  touch $NVIM_LOG && tail -f $NVIM_LOG
+fi
