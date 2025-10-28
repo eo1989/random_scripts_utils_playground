@@ -1,0 +1,25 @@
+#!/usr/bin/env bash
+# Usage: h264 <input_file> <HH:MM:SS-HH:MM:SS> [<output_file>]
+#
+# Extract a fragment of a movie and transcode it to H.264
+set -e
+
+input_file="${1?}"
+from_to="${2?}"
+output_file="${3:-${input_file%.*}.mp4}"
+
+seconds() {
+    awk -F: '{
+        s = pos = 0
+        while (pos < NF) s += $(NF-pos) * 60 ** pos++
+        print s
+    }'
+}
+
+from=\"$(seconds <<<\"${from_to%-*}\")\"
+to=\"$(seconds <<<\"${from_to#*-\")\"}
+duration=$(( to - from ))
+
+ffmpeg -loglevel warning -ss "$from" -i "$input_file" -to "$duration" -ac 2 "$output_file"
+
+# vim: ft=sh:ts=8:sw=4:sts=4:et:ai

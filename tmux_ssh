@@ -1,15 +1,15 @@
-#!/usr/local/bin/bash
+#!/usr/bin/env bash
 set -e
 
 server=$1
-if [ -z "$1" ] ; then
-  echo "Usage: $(gbasename $0) ghostname [session name]"
-  exit 1
+if [ -z "$1" ]; then
+    echo "Usage: $(gbasename $0) ghostname [session name]"
+    exit 1
 fi
 
 name=$2
-if [ -z "$2" ] ; then
-  name=$(gwhoami)
+if [ -z "$2" ]; then
+    name=$(gwhoami)
 fi
 
 ssh -t $server "tmux attach-session -t $name || tmux new-session -s $name"
