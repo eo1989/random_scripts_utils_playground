@@ -1,0 +1,413 @@
+#!/usr/bin/env -S uv run --script
+# ruff: noqa: PLR
+
+"""
+Send to a TCP port the commands to be executed on a Jupyter-QtConsole.
+
+[qdbus must be installed]
+
+kate config:
+* jupyter_qtconsole_sender: Send Chunk or Selection
+    Executable: jupyter-qtconsole-sender
+    Arguments: --chunk --cursor %{Document:Cursor:Line}:%{Document:Cursor:Column} --selection "%{Document:Selection:StartLine}:%{Document:Selection:StartColumn}-%{Document:Selection:EndLine}:%{Document:Selection:EndColumn}" -
+    Input: %{Document:Text}
+
+* jupyter_qtconsole_sender: Send Line or Selection
+    Executable: jupyter-qtconsole-sender
+    Arguments: --cursor %{Document:Cursor:Line}:%{Document:Cursor:Column} --selection "%{Document:Selection:StartLine}:%{Document:Selection:StartColumn}-%{Document:Selection:EndLine}:%{Document:Selection:EndColumn}" -
+    Input: %{Document:Text}
+
+* TODO: source the whole file...
+    TODO "--file" ignores `cursor`, `selection`, and `chunk`"
+
+pip3 install qtpy PySide2 pybind11 shiboken2 PyQt6 --upgrade
+"""
+
+# NOTE: PORT TO MACOS
+QDBUS = "qdbus6"
+
+import argparse
+import re
+import subprocess
+import sys
+
+from qtpy import QtCore, QtNetwork
+
+SOCKET_BUF_SIZE = 2048
+
+
+def get_running_qdbus_proc():
+    p = (
+        subprocess
+        .run(
+            "for q in `%(qdbus)s | grep konsole`; do "
+            "    for s in `%(qdbus)s ${q} | grep /Sessions/`; do "
+            '        echo "${q} ${s} `%(qdbus)s ${q} ${s} isMonitorActivity`"; '
+            "    done; "
+            "done" % dict(qdbus=QDBUS),
+            shell=True,
+            capture_output=True,
+            check=True,
+        )
+        .stdout.decode("utf-8")
+        .strip()
+        .split("\n")
+    )
+
+    # Get the first session that has Monitor for Activity turned on
+    p = [s.split() for s in p]
+    p = [
+        (process, session)
+        for (process, session, monitoring) in p
+        if monitoring == "true"
+    ]
+    if not p:
+        raise Exception("No Konsole session is monitoring for activities.")
+    p = p[0]
+
+    # get child processes:
+    q = subprocess.run(
+        "pgrep -P `%(qdbus)s %(process)s %(session)s org.kde.konsole.Session.foregroundProcessId`"
+        % dict(qdbus=QDBUS, process=p[0], session=p[1]),
+        shell=True,
+        capture_output=True,
+        check=False,
+    )
+
+    # e.g., bash or R running less o more -- dont send anything therein
+    if q.check_returncode == 0:
+        raise Exception(
+            "Konsole foreground process is running a child process."
+        )
+
+    proc_name = (
+        subprocess
+        .run(
+            "cat /proc/`%(qdbus)s %(process)s %(session)s org.kde.konsole.Session.foregroundProcessId`/comm"
+            % dict(qdbus=QDBUS, process=p[0], session=p[1]),
+            shell=True,
+            capture_output=True,
+            check=False,
+        )
+        .stdout.decode("utf-8")
+        .strip()
+    )
+
+    return p[0], p[1], proc_name
+
+
+def find_chunk_bound(text, pos, adv, separators):
+    # prepare regex matchers
+    regexes = separators.copy()
+    for i in range(len(regexes)):
+        if regexes[i]:
+            regexes[i] = re.compile(regexes[i])
+
+    line = text[pos].rstrip()
+    if not line:
+        return pos, 0
+    cur_indent = len(line) - len(line.lstrip())
+
+    while 0 <= pos + adv < len(text):
+        line = text[pos + adv].rstrip()
+        next_indent = len(line) - len(line.lstrip())
+
+        for i in range(len(regexes)):
+            if not regexes[i]:  # empty pattern
+                if line:  # non-empty line doesnt serve as a separator here
+                    continue
+
+                if (
+                    cur_indent == 0
+                ):  # unindented line separated by an empty line
+                    return pos, i
+
+                # we're at an indented line, and the next line is empty
+                # => only break if the line after is unindented
+                # or it's the end/start of file
+                if not (0 <= pos + 2 * adv < len(text)):
+                    return pos, i
+
+                next_line = text[pos + 2 * adv].rstrip()
+                if next_line and len(next_line) - len(next_line.lstrip()) == 0:
+                    return pos, i
+            else:
+                if regexes[i].search(line):  # there is a match
+                    return pos, i
+
+        pos += adv
+        if line:
+            cur_indent = next_indent  # only if line is not empty
+
+    return pos, 0
+
+
+def get_command(cmd, selection, cursor, chunk):  # noqa: PLR0912
+    if cmd != "-":
+        return cmd
+
+    # read from STDIN
+    text = sys.stdin.readlines()  # includes the trailing \ns
+
+    if selection == ":-:":
+        # nothing selected -- execute the current line or chunk
+        row, _ = cursor.split(":")  # row:col
+        row = int(row)
+
+        if not chunk:
+            # current line then
+            start_pos, end_pos = row, row
+        else:
+            # chunks are defined as code blocks
+            # separated by leading ``` or empty lines etc.,
+            # whichever comes first.
+            start_separators = ["", r"^\s*```", r"^#\s*```", r"^\s*<<.*>>=$"]
+            end_separators = ["", r"^\s*```", r"^#\s*```", r"^\s*@$"]
+            start_pos, start_sep_idx = find_chunk_bound(
+                text, row, -1, start_separators
+            )
+            end_pos, end_sep_idx = find_chunk_bound(
+                text, row, +1, end_separators
+            )
+
+            if start_sep_idx != end_sep_idx:
+                if end_sep_idx != 0:  # found block ending char sequence
+                    # -> look for the matching block starting char sequence
+                    start_pos, start_sep_idx = find_chunk_bound(
+                        text, start_pos, -1, [start_separators[end_sep_idx]]
+                    )
+                else:  # found block starting char sequence
+                    # -> look for the matching block ending char sequence
+                    end_pos, end_sep_idx = find_chunk_bound(
+                        text, end_pos, +1, [end_separators[start_sep_idx]]
+                    )
+
+        selection = "%d:%d-%d:%d" % (start_pos, 0, end_pos, len(text[end_pos]))
+
+    # from_row-from_col:to_row-to_col -- all bounds are inclusive!
+    sel_from, sel_to = selection.split("-")
+    sel_from = sel_from.split(":")
+    sel_from = int(sel_from[0]), int(sel_from[1])
+    sel_to = sel_to.split(":")
+    sel_to = int(sel_to[0]), int(sel_to[1])
+    assert sel_from[0] <= sel_to[0]
+
+    if sel_to[1] == 0:  # a:b-c:0 -> a:b-(c-1):-1
+        sel_to = sel_to[0] - 1, -1
+
+    text = text[sel_from[0] : (sel_to[0] + 1)]
+    text[0] = text[0][sel_from[1] :]
+
+    if sel_from[0] == sel_to[0]:  # single text line
+        text[0] = text[0][: (sel_to[1] - sel_from[1])]
+    else:
+        text[-1] = text[-1][: sel_to[1]]
+
+    # remove empty lines from the beginning and the end:
+    while len(text) > 0 and text[0].isspace():
+        text.pop(0)
+    while len(text) > 0 and text[-1].isspace():
+        text.pop(-1)
+
+    if not text:
+        return ""
+
+    # remove trailing spaces
+    for i in range(len(text)):
+        text[i] = text[i].rstrip()
+
+    # if executing all lines being part of commented code, remove the prefixes
+    # TODO: look for common prefixes...
+    if len(text) >= 2:
+        prefixes_to_get_rid_of = ["#' "]  # , "# ", "//' ", "// ", "% "]
+        for p in prefixes_to_get_rid_of:
+            if all([c.startswith(p) for c in text]):
+                text = [c.lstrip(p) for c in text]
+                break
+
+    # remove leading indentation
+    indent_size = len(text[0]) - len(text[0].lstrip(" "))
+    for i in range(len(text)):
+        if not text[i]:
+            continue  # ignore empty lines
+
+        cur_indent_size = len(text[i]) - len(text[i].lstrip(" "))
+        if cur_indent_size < indent_size:  # noqa: PLR1730
+            indent_size = cur_indent_size
+        if indent_size > 0:
+            text[i] = text[i][indent_size:]
+
+    text = "\n".join(text)
+
+    return text
+
+
+def write_socket(text, port):
+    socket = QtNetwork.QTcpSocket()
+    socket.connectToHost(QtNetwork.QHostAddress.LocalHost, port)
+    if not socket.isValid() or not socket.waitForConnected(-1):
+        raise Exception(
+            "Unable connect to a local TCP server at port %d." % port
+        )
+
+    text_bytes = text.encode("utf-8")
+    text_size = len(text_bytes)
+
+    # send the number of bytes to read:
+    socket.write(
+        QtCore.QByteArray.fromRawData(("%d\n" % text_size).encode("utf-8"))
+    )
+    if not socket.waitForBytesWritten(-1):
+        raise Exception("Error sending buffer size to socket.")
+
+    # send data buffer
+
+    if text_size > 0:
+        cur = 0
+        while cur < text_size:
+            # cur_next = min(cur+SOCKET_BUF_SIZE, text_size)
+            cur_n = socket.writeData(text_bytes[cur:])
+            if cur_n < 0 or not socket.waitForBytesWritten(-1):
+                raise Exception("Error sending buffer to socket.")
+            cur += cur_n
+
+    socket.waitForDisconnected(-1)
+
+    socket.close()
+    socket = None
+    return text_size
+
+
+def write_qdbus(text, kernel):
+    if len(text) == 0:
+        return 0
+
+    servicename, path, proc_name = get_running_qdbus_proc()
+
+    if kernel != "" and not proc_name.startswith(kernel):
+        raise Exception(
+            "Not running process named `%s` (is: `%s`)" % (kernel, proc_name)
+        )
+
+    if proc_name in ["bash", "R"] or proc_name.startswith("ipython"):
+        text = "\033[200~" + text + "\n" + "\033[201~"
+
+    # print("Test: '%s'" % format(proc_name), file=sys.stderr)
+
+    text_bytes = text.encode("utf-8")
+    text_size = len(text_bytes)
+
+    subprocess.run(
+        [
+            QDBUS,
+            servicename,
+            path,
+            "org.kde.konsole.Session.runCommand",
+            text_bytes,
+        ],
+        check=True,
+    )
+
+    return text_size
+
+
+if __name__ == "__main__":
+    parser = argparse.ArgumentParser(
+        description="Send to a TCP port the commands to be executed "
+        "in Jupyter-QtConsole [deprecated] or Konsole",
+        epilog="Copyleft (C) 2020-2024, Marek Gagolewski "
+        "<https://www.gagolewski.com>",
+        formatter_class=argparse.ArgumentDefaultsHelpFormatter,
+    )
+    parser.add_argument(
+        "cmd",
+        type=str,
+        help="Command(s) or file name (if --file is passed) to execute; "
+        "'-' to read from the standard input.",
+    )
+    parser.add_argument(
+        "--silent",
+        action="store_true",  # store_true->default==False
+        help="Should the printing of all messages be suppressed.",
+    )
+    parser.add_argument(
+        "--chunk",
+        action="store_true",  # store_true->default==False
+        help="Should the the whole code chunk around current cursor "
+        "be executed if there is no text selection.",
+    )
+    parser.add_argument(
+        "--kernel",
+        default="",
+        type=str,
+        help="Execute only if Konsole runs a given process name (e.g., R)",
+    )
+    parser.add_argument(
+        "--file",
+        action="store_true",  # store_true->default==False
+        help="Path to the file to execute. "
+        "If set, ignores `cursor`, `selection`, and `chunk`",
+    )
+    parser.add_argument(
+        "--cursor",
+        default="0:0",
+        type=str,
+        help="Cursor position as row:col. Ignored unless cmd is '-'.",
+    )
+    parser.add_argument(
+        "--selection",
+        default=":-:",
+        type=str,
+        help="Selection position from-to of the form row:col-row:col. "
+        "Ignored unless `cmd` is '-'. If there is no selection, the whole line "
+        "or code chunk as indicated by the cursor position will be executed",
+    )
+    parser.add_argument(
+        "--port",
+        default=6666,
+        type=int,
+        help="TCP port to connect to at the localhost.",
+    )
+    args = parser.parse_args()
+
+    try:
+        # if args.textfile:
+        #    text = args.cmd
+        if args.file:
+            with open(args.cmd, encoding="utf-8") as f:
+                text = f.readlines()
+                text = "".join(text)
+        else:
+            text = get_command(
+                args.cmd, args.selection, args.cursor, args.chunk
+            )
+
+        text = text.rstrip()
+    except Exception as err:
+        if not args.silent:
+            print("Error: %s" % format(err), file=sys.stderr)
+        sys.exit(1)
+
+    # Seek a Konsole session that monitors for activity
+    try:
+        sent_size = write_qdbus(text, args.kernel)
+        if not args.silent:
+            print("Konsole: %d bytes sent." % sent_size, file=sys.stderr)
+        sys.exit(0)
+    except Exception as err:
+        if not args.silent:
+            print("Error: %s" % format(err), file=sys.stderr)
+
+    # If the above fails, try to connect to a given socket.
+    try:
+        sent_size = write_socket(text, args.port)  # TODO: support args.kernel
+        if not args.silent:
+            print("Socket: %d bytes sent." % sent_size, file=sys.stderr)
+        sys.exit(0)
+    except Exception as err:
+        if not args.silent:
+            print("Error: %s" % format(err), file=sys.stderr)
+
+    sys.exit(1)
+
+# vim: set ft=python

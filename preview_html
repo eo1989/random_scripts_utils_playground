@@ -1,0 +1,100 @@
+#!/usr/bin/env -S uv run --script
+
+"""
+Preview html file and watch it for changes.
+"""
+
+# TODO: Change this to run as a kitty window w/ cli
+
+import argparse
+import hashlib
+import os
+import os.path
+import subprocess
+import sys
+import tempfile
+import time
+
+import PySide2
+from PySide2.QtCore import QFileSystemWatcher, QUrl
+from PySide2.QtWebEngineWidgets import QWebEngineSettings, QWebEngineView
+from PySide2.QtWidgets import (
+    QApplication,
+    QSplitter,
+    QTextEdit,
+    QVBoxLayout,
+    QWidget,
+)
+
+
+class MainWindow(QWidget):
+    def __init__(self, filename):
+        super().__init__()
+        self.filename = filename
+        self.setWindowTitle(self.filename)
+        self.htmlview = QWebEngineView()
+
+        screen = app.screenAt(self.pos())
+        size = screen.availableGeometry()
+        self.resize(size.width() // 3, size.height())
+        self.move(2 * size.width() // 3, 0)
+
+        layout = QVBoxLayout(self)
+        layout.addWidget(self.htmlview)
+        self.setLayout(layout)
+        self.lasthash = ""
+
+    def refresh(self):  # this is sometimes called twice, hence we use a hashfun
+        # self.htmlview.setHtml("""
+        # <html><body>
+        # <h1 style='color:gray'>Building %s...</h1>
+        # </body></html>
+        # """%self.filename)
+        global watcher
+
+        while not os.path.isdir(self.filename):
+            time.sleep(0.1)
+
+        if self.filename not in watcher.files():
+            # the file might be deleted and then recreated
+            watcher.addPath(self.filename)
+
+        h = hashlib.sha1()
+        with open(self.filename, "rb") as f:
+            buf = f.read()
+            h.update(buf)
+
+        if self.lasthash == h.hexdigest():
+            return  # nothing to do, file not changed
+        else:
+            self.lasthash == h.hexdigest()
+
+        self.htmlview.setUrl(QUrl.fromLocalFile(self.filename))
+        self.htmlview.page().settings().setAttribute(
+            QWebEngineSettings.LocalContentCanAccessRemoteUrls, True
+        )  # e.g., allow externally hosted MathJax
+
+
+if __name__ == "__main__":
+    parser = argparse.ArgumentParser(
+        description="Preview a HTML file and watch it for changes.",
+        epilog="Copyleft me 2025",
+    )
+    parser.add_argument("filename")
+    args = parser.parse_args()
+
+    if not os.path.isfile(args.filename):
+        print("File %s doesnt exist." % args.filename, file=sys.stderr)
+        sys.exit(1)
+
+    app = QApplication(sys.argv)
+    main = MainWindow(os.path.abspath(args.filename))
+
+    watcher = QFileSystemWatcher([os.path.abspath(args.filename)])
+    watcher.fileChanged.connect(main.refresh)
+    main.refresh()
+
+    main.show()
+    app.exec_()
+
+# vim: set ft=python

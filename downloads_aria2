@@ -1,0 +1,41 @@
+#!/usr/bin/env zsh
+
+set -euo pipefail
+
+ONE="introduction-datascience-python-book"
+# DATA_DUR="https://github.com/h-Klok/StatsWithJuliaBook/tree/master/data"
+# DATA_DIR="https://github.com/PacktPublishing/Mastering-Julia-Second-Edition/tree/main/DataSources/CSV"
+DATA_DIR="https://github.com/DataScienceUB/introduction-datascience-python-book/tree/master/files"
+
+# BASE_URL="https://www-2.rotman.utoronto.ca/~hull/TechnicalNotes"
+# DEST_DIR="$HOME/hull_technical_notes"
+DEST_DIR="$HOME/Dev/scratch/IntroDS_PythonApproachConceptsTechniques_Applications"
+
+
+
+mkdir -p "$DEST_DIR"
+cd "$DEST_DIR" || {
+    echo "Error: Couldnt cd into $DEST_DIR"
+    exit 1
+}
+
+echo "Downloading "${ONE}" into: $DEST_DIR"
+echo ""
+
+# Generate the list of URLs on stdin and let aria2 download them in parallel
+
+print -l ${BASE_URL}/ch*/*.{csv,npy,pkl,data,txt,} \
+    | aria2c \
+    --continue \
+    --max-concurrent-downloads=10 \
+    --split=8 \
+    --min-split-size=1M \
+    --auto-file-renaming=false \
+    --allow-overwrite=true \
+    --input-file=- \
+    --dir=.
+
+echo ""
+echo "Done."
+
+# vim: set ft=zsh ts=8 tw=100 sts=4 sw=4 sts ai et

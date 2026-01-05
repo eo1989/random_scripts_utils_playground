@@ -1,0 +1,302 @@
+#!/usr/bin/env -S uv run --script
+
+"""
+Executes a custom build/view/clean command based on a file's extension.
+
+# ########################################################################## #
+#                                                                            #
+#   Copyleft (C) 2020-2025, Marek Gagolewski <https://www.gagolewski.com>    #
+#                                                                            #
+#                                                                            #
+#   This program is free software: you can redistribute it and/or modify     #
+#   it under the terms of the GNU Affero General Public License              #
+#   Version 3, 19 November 2007, published by the Free Software Foundation.  #
+#   This program is distributed in the hope that it will be useful,          #
+#   but WITHOUT ANY WARRANTY; without even the implied warranty of           #
+#   MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the             #
+#   GNU Affero General Public License Version 3 for more details.            #
+#   You should have received a copy of the License along with this program.  #
+#   If this is not the case, refer to <https://www.gnu.org/licenses/>.       #
+#                                                                            #
+# ########################################################################## #
+"""
+
+import argparse
+import os
+import os.path
+import subprocess
+import sys
+
+import yaml
+
+exts = {
+    "html": [".html"],
+    "Rmd": [".Rmd", ".rmd"],
+    "Rnw": [".Rnw", ".rnw"],
+    "md": [".md"],
+    "tex": [".tex"],
+    "py": [".py"],
+    "R": [".R", ".r"],
+    "dot": [".dot"],
+    "puml": [".puml"],
+}
+
+
+cmds = {
+    "tex": {
+        # % makeme:
+        # %     build: xelatex_nobibtex
+        "_comment_percent": True,
+        "build": "pdflatex_bibtex",
+        "pdflatex_biber": "pdflatex -file-line-error -halt-on-error -shell-escape "
+        "-interaction=errorstopmode ${FILE_NAME} && "
+        "pdflatex  -shell-escape ${FILE_NAME}; "
+        "biber ${FILE_NAME/%${FILE_EXT}/} && "
+        "pdflatex  -shell-escape ${FILE_NAME}",
+        "pdflatex_bibtex": "pdflatex -file-line-error -halt-on-error -shell-escape "
+        "-interaction=errorstopmode ${FILE_NAME} && "
+        "pdflatex  -shell-escape ${FILE_NAME}; "
+        "bibtex ${FILE_NAME/%${FILE_EXT}/} && "
+        "pdflatex  -shell-escape ${FILE_NAME}",
+        "xelatex_bibtex": "xelatex -file-line-error -halt-on-error -shell-escape "
+        "-interaction=errorstopmode ${FILE_NAME} && "
+        "xelatex  -shell-escape ${FILE_NAME}; "
+        "bibtex ${FILE_NAME/%${FILE_EXT}/} && "
+        "xelatex  -shell-escape ${FILE_NAME}",
+        "pdflatex_nobibtex": "pdflatex -file-line-error -halt-on-error -shell-escape "
+        "-interaction=errorstopmode ${FILE_NAME} && "
+        "pdflatex  -shell-escape ${FILE_NAME}",
+        "xelatex_nobibtex": "xelatex -file-line-error -halt-on-error -shell-escape "
+        "-interaction=errorstopmode ${FILE_NAME} && "
+        "xelatex  -shell-escape ${FILE_NAME}",
+        "view": "kstart okular ${FILE_DIRNAME}/${FILE_NAME/%${FILE_EXT}/.pdf}",
+        "clean": "rm -f "
+        "${FILE_NAME/%${FILE_EXT}/.abs} "
+        "${FILE_NAME/%${FILE_EXT}/.aux} "
+        "${FILE_NAME/%${FILE_EXT}/.bbl} "
+        "${FILE_NAME/%${FILE_EXT}/.bcf} "
+        "${FILE_NAME/%${FILE_EXT}/.blg} "
+        "${FILE_NAME/%${FILE_EXT}/.loc} "
+        "${FILE_NAME/%${FILE_EXT}/.log} "
+        "${FILE_NAME/%${FILE_EXT}/.out} "
+        "${FILE_NAME/%${FILE_EXT}/.nav} "
+        "${FILE_NAME/%${FILE_EXT}/.run.xml} "
+        "${FILE_NAME/%${FILE_EXT}/.soc} "
+        "${FILE_NAME/%${FILE_EXT}/.snm} "
+        "${FILE_NAME/%${FILE_EXT}/.vrb} "
+        "${FILE_NAME/%${FILE_EXT}/.toc} "
+        "${FILE_NAME/%${FILE_EXT}/.tpt} "
+        "${FILE_NAME/%${FILE_EXT}/.spl} "
+        "${FILE_NAME/%${FILE_EXT}/.synctex.gz} "
+        "&& echo 'makeme: All clear now.'",
+    },
+    "Rnw": {
+        "_comment_percent": True,
+        "build": 'Rscript -e "'
+        "knitr::knit2pdf('${FILE_NAME}', quiet=TRUE, "
+        "compiler = 'xelatex')"
+        '"',
+        "view": "kstart okular ${FILE_DIRNAME}/${FILE_NAME/%${FILE_EXT}/.pdf}",
+        "clean": "rm -f "
+        "${FILE_NAME/%${FILE_EXT}/.abs} "
+        "${FILE_NAME/%${FILE_EXT}/.aux} "
+        "${FILE_NAME/%${FILE_EXT}/.bbl} "
+        "${FILE_NAME/%${FILE_EXT}/.blg} "
+        "${FILE_NAME/%${FILE_EXT}/.log} "
+        "${FILE_NAME/%${FILE_EXT}/.out} "
+        "${FILE_NAME/%${FILE_EXT}/.snm} "
+        "${FILE_NAME/%${FILE_EXT}/.vrb} "
+        "${FILE_NAME/%${FILE_EXT}/.toc} "
+        "${FILE_NAME/%${FILE_EXT}/.tpt} "
+        "${FILE_NAME/%${FILE_EXT}/.spl} "
+        "${FILE_NAME/%${FILE_EXT}/.synctex.gz} "
+        "&& echo 'makeme: All clear now.'",
+    },
+    "html": {
+        "view": "preview_html ${FILE_NAME}",
+    },
+    "Rmd": {
+        "_yaml": True,
+        "view": "preview_Rmd ${FILE_NAME}",
+    },
+    "md": {
+        "_yaml": True,
+        "view": "preview_Rmd ${FILE_NAME}",
+    },
+    "py": {
+        "build": "jupyter-qtconsole-sender --kernel=ipython3 \"%run '${FILE_PATH}'\"",
+        "_comment_hash": True,
+    },
+    "R": {
+        "build": "jupyter-qtconsole-sender --kernel=R \"source('${FILE_PATH}')\"",
+        "_comment_hash": True,
+    },
+    "dot": {
+        "_comment_hash": True,
+    },
+    "puml": {
+        "_comment_hash": True,
+    },
+}
+
+
+def try_yaml(cmd, file_name):
+    # read a YAML block
+    with open(file_name) as f:
+        if f.readline().rstrip() != "---":
+            return None
+
+        yaml_block = []
+        while True:
+            line = f.readline().rstrip()
+            if line == "---":
+                break
+            yaml_block.append(line)
+
+        yaml_block = "\n".join(yaml_block)
+        yaml_block = yaml.safe_load(yaml_block)
+        if "makeme" not in yaml_block:
+            return None
+        return yaml_block["makeme"].get(cmd, None)
+
+
+def try_comment(cmd, file_name, comment_char):
+    # read a YAML block
+    with open(file_name) as f:
+        comment_block = []
+        while True:
+            line = f.readline().strip()
+            if not line.startswith(comment_char):
+                break
+            if line.startswith(comment_char + " "):
+                comment_block.append(line[(len(comment_char) + 1) :])
+
+        if len(comment_block) == 0:
+            return None
+
+        # print(comment_block, file=sys.stderr)
+        comment_block = "\n".join(comment_block)
+        comment_block = yaml.safe_load(comment_block)
+        if "makeme" not in comment_block:
+            return None
+        return comment_block["makeme"].get(cmd, None)
+
+
+def make(cmd, file_name):
+    global exts, cmds
+
+    rev_exts = {ve: k for k, v in exts.items() for ve in v}
+
+    file_path = os.path.abspath(file_name)
+    file_basename = os.path.basename(file_path)
+    file_dirname = os.path.dirname(file_path)
+    _, file_ext = os.path.splitext(file_path)
+
+    file_ext_lookup = rev_exts[file_ext]
+
+    if file_ext_lookup not in cmds:
+        raise Exception("file_ext_lookup not in cmds")
+
+    cmd_exec = None
+    if cmds[file_ext_lookup].get("_yaml", False):
+        cmd_exec = try_yaml(cmd, file_name)
+    if not cmd_exec and cmds[file_ext_lookup].get("_comment_hash", False):
+        cmd_exec = try_comment(cmd, file_name, "#")
+    if not cmd_exec and cmds[file_ext_lookup].get("_comment_percent", False):
+        cmd_exec = try_comment(cmd, file_name, "%")
+    if not cmd_exec:
+        if cmd not in cmds[file_ext_lookup]:
+            raise Exception("cmd not in cmds[file_ext_lookup]")
+        cmd_exec = cmds[file_ext_lookup][cmd]
+
+    # command redirect, e.g., build: build_no_bibtex
+    if cmd_exec in cmds[file_ext_lookup].keys():
+        cmd_exec = cmds[file_ext_lookup][cmd_exec]
+
+    # print(cmd_exec, file=sys.stderr)
+
+    if cmd_exec[-1] == "&":  # fork
+        subprocess.Popen(
+            args=["bash", "-c", cmd_exec[:-1]],
+            env={
+                "FILE_NAME": file_name,
+                "FILE_PATH": file_path,
+                "FILE_BASENAME": file_basename,
+                "FILE_DIRNAME": file_dirname,
+                "FILE_EXT": file_ext,
+                **os.environ,
+            },
+        )
+    else:
+        ret = subprocess.run(
+            args=["bash", "-c", cmd_exec],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            env={
+                "FILE_NAME": file_name,
+                "FILE_PATH": file_path,
+                "FILE_BASENAME": file_basename,
+                "FILE_DIRNAME": file_dirname,
+                "FILE_EXT": file_ext,
+                **os.environ,
+            },
+            check=False,
+        )
+
+        try:
+            output = ret.stdout.decode().rstrip()
+        except:
+            output = ret.stdout.decode("iso-8859-1").rstrip()
+
+        if ret.returncode != 0:
+            raise Exception(output)
+        else:
+            msg_success = (
+                "💚 Process finished with exit code 0. 😀💪👏🙂😊😀😎😃😄😆😍"
+            )
+            print(msg_success)
+            if output:
+                print("…" * 76)
+                print(output)
+                print("…" * 76)
+                print(msg_success)
+
+
+if __name__ == "__main__":
+    parser = argparse.ArgumentParser(
+        description="Executes a custom build/view/clean/etc. command based on "
+        "a file's extension.",
+        epilog="Copyleft (C) 2020-2025, Marek Gagolewski <https://www.gagolewski.com>",
+        formatter_class=argparse.ArgumentDefaultsHelpFormatter,
+    )
+    parser.add_argument(
+        "cmd", type=str, help="Command to execute, e.g., build, clean, or view"
+    )
+    parser.add_argument("filename", type=str, help="File to be processed")
+    args = parser.parse_args()
+
+    # load custom config in .makeme (if exists)
+    if os.path.isfile(".makeme"):
+        with open(".makeme") as f:
+            custom_config = "".join(f.readlines())
+        custom_config = yaml.safe_load(custom_config)
+        for _ext in custom_config:
+            for _cmd, _action in custom_config[_ext].items():
+                cmds[_ext][_cmd] = _action
+
+    if not os.path.isfile(args.filename):
+        print("File %s does not exist." % args.filename, file=sys.stderr)
+        sys.exit(1)
+
+    try:
+        make(args.cmd, args.filename)
+    except Exception as err:
+        msg_failure = "❗ There were errors. 😳😱🤬😭😰😦😱😫😩😖😞😡"
+        print(msg_failure, file=sys.stderr)
+        print("❗" * 38, file=sys.stderr)
+        print(format(err), file=sys.stderr)
+        print("❗" * 38, file=sys.stderr)
+        print(msg_failure, file=sys.stderr)
+        sys.exit(1)
+
+# vim: set ft=python

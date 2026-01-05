@@ -1,4 +1,4 @@
-#!/bin/bash
+#!/usr/bin/env bash
 
 interval=$1
 interval=${interval:-30}
@@ -9,5 +9,7 @@ while true; do
   clear -x
   echo "$res"
 
-  sleep $interval
+  sleep "$interval"
 done
+
+# vim: ft=bash ts=8 sw=4 sts=4

@@ -8,6 +8,8 @@ similar packages table by manually calculating the required width.
 import argparse
 import re
 import sys
+
+# from types import NoneType
 from typing import Any, Dict, List
 from urllib.parse import quote
 
@@ -22,13 +24,16 @@ def search_exact_match(package_name: str) -> dict[str, Any]:
     """Search for exact package match using PyPI Json API"""
 
     try:
-        url = f"https://pypi.org/pypi/{package_name}/json"
-        response = rq.get(url, timeout=19)
+        URL = f"https://pypi.org/pypi/{package_name}/json"
+        response = rq.get(URL, timeout=19)
         if response.status_code == 200:
             return response.json()
-        return None  # pyright: ignore[reportReturnType]
+        return None
     except rq.RequestException:
-        return None  # pyright: ignore[reportReturnType]
+        raise rq.RequestException(
+            "Network error occurred while accessing PyPI API"
+        )
+        return None
 
 
 def search_similar_packages(query: str) -> list[str]:
@@ -46,7 +51,7 @@ def search_similar_packages(query: str) -> list[str]:
             pattern = r'<a ref="[^"]*">' + re.escape(query_lower) + r'[^"]*</a>'
             matches = re.findall(pattern, content)
 
-            packages = []
+            packages: list[str | Any] = []
             for match in matches:
                 package_name = match.split(">")[-2].split("<")[0]
                 packages.append(package_name)
@@ -55,6 +60,7 @@ def search_similar_packages(query: str) -> list[str]:
             return list(set(packages))
     except rq.RequestException:
         pass
+
     return []
 
 
@@ -72,6 +78,7 @@ def main():
     args = parser.parse_args()
 
     console = Console()
+
     query = args.query.strip()
     limit = None if args.limit == 0 else args.limit
 
@@ -85,7 +92,7 @@ def main():
 
     # 1. Fetch all data first
     exact_match = None
-    similar_packages_data = []
+    similar_packages_data: list[str] = []
 
     with console.status(
         f"[bold green]Fetching data ...[/bold green]", spinner="dots"

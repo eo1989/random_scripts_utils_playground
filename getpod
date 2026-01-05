@@ -1,0 +1,14 @@
+#!/usr/bin/env bash
+set -e
+set -u
+set -o pipefail
+
+yt-dlp \
+    --embed-chapters \
+    --embed-thumbnail \
+    --extract-audio \
+    --audio-format mp3 \
+    -f worstaudio \
+    "$@"
+
+# vim:set ft=bash ts=8 sw=4 tw=80 sts=4

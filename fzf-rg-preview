@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# shellcheck disable=SC1073
 
 # 1. search for text in files using ripgrep
 # 2. interactively restart ripgrep w/ reload action --> look at using parallels with fd/rg via Julian's dotfiles!
@@ -14,5 +15,7 @@ IFS=: read -ra selected < <(
       --preview 'bat --color=always {1} --highlight-line {2}' \
       --preview-window right
 )
-[ -n "${selected[0]}"] && nvim "${selected[0]}:${selected[1]}"
+[ -n "${selected[0]}" ] && nvim "${selected[0]}:${selected[1]}"
 # 'up,60%,border-down,+{2}+3/3,~3'
+
+# vim: ft=bash ts=8 sw=4 sts=4

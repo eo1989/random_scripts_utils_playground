@@ -1,0 +1,361 @@
+#!/usr/bin/env -S uv run --script
+# ruff: noqa: PLR
+
+#!/usr/bin/python3
+# kate: default-dictionary en_AU; syntax python
+
+"""
+An application that features a Jupyter-QtConsole and listens for commands to
+be executed on a TCP port.  [DEPRECATED]
+
+# ############################################################################ #
+#                                                                              #
+#   Copyleft (C) 2020-2025, Marek Gagolewski <https://www.gagolewski.com>      #
+#                                                                              #
+#                                                                              #
+#   This program is free software: you can redistribute it and/or modify       #
+#   it under the terms of the GNU Affero General Public License                #
+#   Version 3, 19 November 2007, published by the Free Software Foundation.    #
+#   This program is distributed in the hope that it will be useful,            #
+#   but WITHOUT ANY WARRANTY; without even the implied warranty of             #
+#   MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the               #
+#   GNU Affero General Public License Version 3 for more details.              #
+#   You should have received a copy of the License along with this program.    #
+#   If this is not the case, refer to <https://www.gnu.org/licenses/>.         #
+#                                                                              #
+# ############################################################################ #
+
+
+TO DO - listener:
+    * Alt+1,2,3 - switch to tab #
+    * help pane at the bottom - react to: ?str.strip help(xxx) - with tabs
+    * Kernel -> New kernel from list...
+    * Kernel -> Close tab
+    * Allow multiple kernels of the same type (ipython3:1, ipython3:abc, ...)
+    * Suppress output
+    * Suppress input
+    * Clear last output
+    * code snippets? run script on startup?
+    * object inspector/preview X.e<suggest>
+    * Markdown/HTML support? [bare-bone qtconsole doesn't support this]
+        from IPython.display import display, Markdown, Latex, HTML
+        display(HTML('<strong>aaa!</strong>'))
+        display(Latex('\\phi'))
+        display(Markdown('$b = \\frac{\\epsilon}{2}$'))
+        display(Math('$b = \\frac{\\epsilon}{2}$')) # this works
+        ---- separate QtWebKit viewer pane? with images, man pages etc.?
+    * Own magics/modelines
+        #%%silent
+        #%%restart
+        #%%clear
+        #%%cd <directory>
+        #%%cd @ -- script's folder
+        #%%cd @/.. -- script's parent folder etc.
+        #%%pwd
+        #%%target ipython3
+        #%%target ipython3:genieclust_testbed
+    * Bugs:
+        * up arrow history cursor pos
+        * tab completion adds backticks
+        * record stderr?
+    * Print working directory in the status bar or wherever, after each cmd exec
+TO DO - sender:
+    * set destination kernel name/tab number [or via magic?]
+    * Dialogue box: server is not running, do you want to start it from the current working directory?
+    * source whole file CTRL+SHIFT+S in kate
+
+"""
+
+import argparse
+import sys
+
+from qtconsole.manager import QtKernelManager
+from qtconsole.rich_jupyter_widget import RichJupyterWidget
+
+# import os
+# import os.path
+# import tempfile
+# import qtpy
+from qtpy import QtCore, QtGui, QtNetwork, QtWidgets
+
+SOCKET_BUF_SIZE = 2048
+
+
+class RicherJupyterWidget(RichJupyterWidget):
+    def __init__(self, parent, kernel_name):
+        kernel_manager = QtKernelManager(kernel_name=kernel_name)
+        # kernel_manager.stop_restarter()
+        # kernel_manager.autorestart = False
+        # kernel_manager._restarter.time_to_dead
+        kernel_manager.start_kernel()
+
+        kernel_client = kernel_manager.client()  # creates a new client
+        kernel_client.start_channels()
+
+        super().__init__(parent)
+
+        self.kernel_manager = kernel_manager
+        self.kernel_client = kernel_client
+
+        # self.set_default_style("linux")
+        # self.syntax_style = "monokai"
+        # self._set_font(QtGui.QFont("Ubuntu Mono", 12))
+        # self._set_paging("hsplit")
+        self.confirm_restart = False
+
+    def _handle_kernel_died(self, since_last_heartbeat):
+        """
+        Handle the kernel's death (not responding to "heartbeats")
+
+        -- do nothing.
+        """
+        # self.log.warning("kernel died: %s", since_last_heartbeat)
+        # if self.custom_restart:
+        # self.custom_restart_kernel_died.emit(since_last_heartbeat)
+        # else:
+        #    self._kernel_restarted_message(died=True)
+        #    self.reset()
+        pass
+
+
+class MainWindow(QtWidgets.QMainWindow):
+    def __init__(self, port, kernel_names, silent):
+        super().__init__()
+        self.silent = silent
+        self.setWindowTitle("jupyter-qtconsole-listener")
+
+        self.server = QtNetwork.QTcpServer(self)
+        if not self.server.listen(QtNetwork.QHostAddress.LocalHost, port):
+            raise Exception(
+                "Unable to set up a local TCP server at port %d" % port
+            )
+        self.server.newConnection.connect(self.new_connection)
+
+        self.tabs = QtWidgets.QTabWidget(self)
+
+        self.jupyter_widgets = []
+        for i in range(len(kernel_names)):
+            jw = RicherJupyterWidget(self.tabs, kernel_names[i])
+            self.jupyter_widgets.append(jw)
+            self.tabs.addTab(jw, "&" + kernel_names[i])
+
+        self.setCentralWidget(self.tabs)
+        self.jupyter_widgets[0]._control.setFocus()
+        if not self.silent:
+            print(
+                "Kernels %r started. Listening at port %d."
+                % (kernel_names, port),
+                file=sys.stderr,
+            )
+
+        file_menu = self.menuBar().addMenu("&File")
+        act = file_menu.addAction(
+            "&Quit", self.close
+        )  # , QtGui.QKeySequence.Quit)
+        file_menu.addAction(act)
+
+        kernel_menu = self.menuBar().addMenu("&Kernel")
+        act = kernel_menu.addAction(
+            "&Next Tab", self.next_tab, QtGui.QKeySequence("Ctrl+PgDown")
+        )
+        kernel_menu.addAction(act)
+        act = kernel_menu.addAction(
+            "&Previous Tab", self.previous_tab, QtGui.QKeySequence("Ctrl+PgUp")
+        )
+        kernel_menu.addAction(act)
+        act = kernel_menu.addAction("&Clear Outputs", self.clear_output)
+        kernel_menu.addAction(act)
+        act = kernel_menu.addAction("&Interrupt Kernel", self.interrupt)
+        kernel_menu.addAction(act)
+        act = kernel_menu.addAction("&Restart Kernel", self.restart)
+        kernel_menu.addAction(act)
+        act = kernel_menu.addAction(
+            "Re&start Kernel and Clear Outputs", self.restart_clear
+        )
+        kernel_menu.addAction(act)
+
+        file_menu = self.menuBar().addMenu("&Help")
+        act = file_menu.addAction("&About", self.about)
+        file_menu.addAction(act)
+
+        screen = app.screenAt(self.pos())
+        size = screen.availableGeometry()
+        self.resize(4 * size.width() // 10, size.height())
+        self.move(6 * size.width() // 10, 0)
+
+        # jupyter_widget.clear_output() # current line of output
+
+        # QKeySequence.New
+        # QKeySequence.Close
+
+    def interrupt(self):
+        jw = self.jupyter_widgets[self.tabs.currentIndex()]
+        jw.request_interrupt_kernel()
+
+    def restart(self):
+        ret = QtWidgets.QMessageBox.question(
+            self, "Confirm Kernel Restart", "Shutdown the current kernel?"
+        )
+        if ret == QtWidgets.QMessageBox.Yes:
+            jw = self.jupyter_widgets[self.tabs.currentIndex()]
+            jw.request_interrupt_kernel()
+            jw.restart_kernel(None, now=False)
+            return True
+        else:
+            return False
+
+    def restart_clear(self):
+        if self.restart():
+            self.clear_output()
+
+    def closeEvent(self, event):
+        ret = QtWidgets.QMessageBox.question(
+            self,
+            "Confirm Quit",
+            "Shutdown all kernels and quit?",
+            defaultButton=QtWidgets.QMessageBox.No,
+        )
+        if ret == QtWidgets.QMessageBox.Yes:
+            event.accept()
+        else:
+            event.ignore()
+
+    def clear_output(self):
+        jw = self.jupyter_widgets[self.tabs.currentIndex()]
+        jw.reset(clear=True)
+
+    def next_tab(self):
+        self.tabs.setCurrentIndex(
+            min(self.tabs.currentIndex() + 1, self.tabs.count() - 1)
+        )
+
+    def previous_tab(self):
+        self.tabs.setCurrentIndex(max(self.tabs.currentIndex() - 1, 0))
+
+    def shutdown_kernel(self):
+        for i in range(len(self.jupyter_widgets)):
+            self.jupyter_widgets[i].kernel_client.stop_channels()
+            self.jupyter_widgets[i].kernel_manager.shutdown_kernel()
+        self.server.close()
+        if not self.silent:
+            print("Bye.", file=sys.stderr)
+
+    def about(self):
+        QtWidgets.QMessageBox.about(
+            self,
+            "About jupyter-qtconsole-listener",
+            "An application that features a Jupyter-QtConsole "
+            "and listens for commands to execute on a TCP port.\n\n"
+            "Copyleft (C) 2020-2024, Marek Gagolewski\n"
+            "<https://www.gagolewski.com>\n\n"
+            "QtConsole: https://github.com/jupyter/qtconsole\n"
+            "Project Jupyter: https://jupyter.org/\n\n"
+            "Licensed under the BSD 3-Clause License",
+        )
+
+    def new_connection(self):
+        socket = self.server.nextPendingConnection()
+        socket.setReadBufferSize(SOCKET_BUF_SIZE)
+        socket.waitForReadyRead(-1)
+
+        # expected number of bytes
+        text_size = int(socket.readLine().data().decode("utf-8"))
+        assert text_size >= 0
+
+        if text_size == 0:
+            # This is a test connection.
+            socket.disconnectFromHost()
+            socket.close()
+            socket = None
+            if not self.silent:
+                print("Test connection OK.", file=sys.stderr)
+            return
+
+        if not self.silent:
+            print("Receiving %d bytes... " % text_size, end="", file=sys.stderr)
+        text = QtCore.QByteArray()
+        first = True
+        while text.size() != text_size:
+            # first batch with no wait, data is pending (I think)
+            if not first and not socket.waitForReadyRead(-1):
+                if not self.silent:
+                    print(
+                        "Error receiving %d bytes of data. Ignoring this batch."
+                        % text_size,
+                        file=sys.stderr,
+                    )
+                socket.disconnectFromHost()
+                socket.close()
+                return
+            buf = socket.readAll()
+            text.append(QtCore.QByteArray.fromRawData(buf))
+            if not self.silent:
+                print(text.size(), end=", ", file=sys.stderr)
+            first = False
+
+        if not self.silent:
+            print("OK, %d bytes received." % text_size, file=sys.stderr)
+        socket.disconnectFromHost()
+        socket.close()
+        socket = None
+
+        assert text_size == text.size()
+        text = text.data().decode("utf-8")
+        self.execute(text)
+
+    def execute(self, code):
+        jw = self.jupyter_widgets[self.tabs.currentIndex()]
+        cursor = jw._get_end_cursor()
+        cursor.beginEditBlock()
+        try:
+            first = True
+            for line in code.splitlines():
+                if not first:
+                    cursor.insertText("\n")
+                    jw._insert_continuation_prompt(cursor, False)
+                else:
+                    first = False
+                cursor.insertText(line)
+        finally:
+            cursor.endEditBlock()
+
+        jw.do_execute(source=code, complete=True, indent=False)
+
+
+if __name__ == "__main__":
+    parser = argparse.ArgumentParser(
+        description="An application that features a Jupyter-QtConsole "
+        "and listens for commands to be executed on a TCP port.",
+        epilog="Copyleft (C) 2020-2024, Marek Gagolewski "
+        "<https://www.gagolewski.com>",
+        formatter_class=argparse.ArgumentDefaultsHelpFormatter,
+    )
+    parser.add_argument(
+        "kernel",
+        default=["python3", "ir"],
+        type=str,
+        nargs="*",
+        help="The ID of an installed kernel, e.g., 'python3' (the default), "
+        "'bash' or 'ir'.",
+    )
+    parser.add_argument(
+        "--silent",
+        action="store_true",
+        help="Should the printing of all messages be suppressed.",
+    )
+    parser.add_argument(
+        "--port",
+        default=6666,
+        type=int,
+        help="TCP port the localhost shall listen at.",
+    )
+
+    args = parser.parse_args()
+
+    app = QtWidgets.QApplication(sys.argv)
+    window = MainWindow(args.port, args.kernel, args.silent)
+    window.show()
+    app.aboutToQuit.connect(window.shutdown_kernel)
+    app.exec_()
+
+# vim: set ft=python
